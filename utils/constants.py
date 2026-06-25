@@ -21,6 +21,16 @@ FALLBACK_MOD_DB_URLS = [
 ]
 
 # ============================================================
+# 未知模组上传相关 URL
+# ============================================================
+# 未知模组数据仓库地址（用于查看和提交）
+UNKNOWN_MODS_REPO_URL = "https://github.com/Kalloer1/mc_server_maker/blob/main/unknow.json"
+# 未知模组 raw 数据 URL
+UNKNOWN_MODS_RAW_URL = "https://raw.githubusercontent.com/Kalloer1/mc_server_maker/main/unknow.json"
+# 本地未知模组记录路径
+LOCAL_UNKNOWN_MODS_PATH = os.path.join(USER_DATA_DIR, "db", "unknown_mods.json")
+
+# ============================================================
 # 内置数据库路径（相对于项目根目录）
 # ============================================================
 BUILTIN_MOD_DB_PATH = "data/mod_id.json"

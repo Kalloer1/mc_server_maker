@@ -12,7 +12,7 @@ import json
 import os
 import threading
 from pathlib import Path
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, List
 from utils.constants import (
     USER_DATA_DIR,
     CACHED_DB_PATH,
@@ -20,6 +20,8 @@ from utils.constants import (
     DEFAULT_MOD_DB_URL,
     FALLBACK_MOD_DB_URLS,
     BUILTIN_MOD_DB_PATH,
+    LOCAL_UNKNOWN_MODS_PATH,
+    UNKNOWN_MODS_REPO_URL,
 )
 from utils.downloader import Downloader
 
@@ -44,10 +46,13 @@ class ModDatabase:
         # 数据库（内存中的缓存）
         self._cache_db: Dict[str, str] = {}   # modid → client/server/both
         self._local_discoveries: Dict[str, str] = {}  # modid → client/server/both
+        self._unknown_mods: Dict[str, dict] = {}  # modid → {modid, name, version, author, source}
         self._db_version: str = ""           # 在线数据库版本（若有）
 
         # 本地发现记录写入锁（防止多线程并发写入冲突）
         self._discovery_lock = threading.Lock()
+        # 未知模组写入锁
+        self._unknown_lock = threading.Lock()
 
         # 内置数据库路径（解析为绝对路径以便在打包后找到）
         self._builtin_db_path = Path(builtin_db_path)
@@ -426,3 +431,151 @@ class ModDatabase:
     def get_db_dir(self) -> str:
         """返回数据库文件所在目录"""
         return os.path.dirname(CACHED_DB_PATH)
+
+    # ----------------------------------------------------------------
+    # 未知模组管理
+    # ----------------------------------------------------------------
+
+    def add_unknown_mod(
+        self,
+        modid: str,
+        mod_name: str = "",
+        version: str = "",
+        author: str = "",
+        source: str = "jar_unknown",
+    ):
+        """
+        记录一个未知模组到本地未知模组列表。
+
+        参数：
+            modid: 模组 ID
+            mod_name: 模组文件名
+            version: 模组版本
+            author: 作者
+            source: 来源标识（jar_unknown / db_unknown / blacklist）
+        """
+        key = modid.lower().strip()
+        if not key:
+            return
+
+        with self._unknown_lock:
+            if key not in self._unknown_mods:
+                self._unknown_mods[key] = {
+                    "modid": modid,
+                    "name": mod_name,
+                    "version": version,
+                    "author": author,
+                    "source": source,
+                    "count": 1,
+                }
+            else:
+                self._unknown_mods[key]["count"] += 1
+            self._save_unknown_mods()
+
+    def batch_add_unknown_mods(self, mod_list: List[dict]):
+        """
+        批量添加未知模组。
+
+        参数：
+            mod_list: 模组信息列表，每个元素为 dict，至少包含 modid 字段
+        """
+        with self._unknown_lock:
+            for mod_info in mod_list:
+                modid = mod_info.get("modid", "").lower().strip()
+                if not modid:
+                    continue
+                if modid not in self._unknown_mods:
+                    self._unknown_mods[modid] = {
+                        "modid": mod_info.get("modid", ""),
+                        "name": mod_info.get("name", ""),
+                        "version": mod_info.get("version", ""),
+                        "author": mod_info.get("author", ""),
+                        "source": mod_info.get("source", "jar_unknown"),
+                        "count": 1,
+                    }
+                else:
+                    self._unknown_mods[modid]["count"] += 1
+            self._save_unknown_mods()
+
+    def get_unknown_mods(self) -> Dict[str, dict]:
+        """获取所有未知模组"""
+        return dict(self._unknown_mods)
+
+    def get_unknown_mods_count(self) -> int:
+        """获取未知模组数量"""
+        return len(self._unknown_mods)
+
+    def load_unknown_mods(self) -> bool:
+        """从本地文件加载未知模组列表"""
+        path = Path(LOCAL_UNKNOWN_MODS_PATH)
+        if not path.exists():
+            return False
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                self._unknown_mods.clear()
+                for k, v in data.items():
+                    if isinstance(v, dict):
+                        self._unknown_mods[k] = v
+                return len(self._unknown_mods) > 0
+        except (json.JSONDecodeError, IOError):
+            pass
+        return False
+
+    def _save_unknown_mods(self):
+        """保存未知模组到本地文件（调用方必须持有锁）"""
+        db_dir = os.path.dirname(LOCAL_UNKNOWN_MODS_PATH)
+        os.makedirs(db_dir, exist_ok=True)
+        try:
+            with open(LOCAL_UNKNOWN_MODS_PATH, "w", encoding="utf-8") as f:
+                json.dump(self._unknown_mods, f, ensure_ascii=False, indent=2)
+        except IOError:
+            pass
+
+    def export_unknown_mods(self, output_path: str) -> Tuple[bool, str]:
+        """
+        导出未知模组为 JSON 文件（方便用户手动提交 PR）。
+
+        参数：
+            output_path: 输出文件路径
+
+        返回：
+            (success, message)
+        """
+        if not self._unknown_mods:
+            return False, "没有未知模组可以导出。"
+
+        try:
+            # 导出为简洁格式：modid → 建议类型(unknown) + 基本信息
+            export_data = {}
+            for modid, info in self._unknown_mods.items():
+                export_data[modid] = {
+                    "modid": info.get("modid", ""),
+                    "name": info.get("name", ""),
+                    "version": info.get("version", ""),
+                    "author": info.get("author", ""),
+                    "suggested_side": "unknown",
+                }
+
+            with open(output_path, "w", encoding="utf-8") as f:
+                json.dump(export_data, f, ensure_ascii=False, indent=2)
+
+            return True, f"已导出 {len(export_data)} 个未知模组到：\n{output_path}"
+        except IOError as e:
+            return False, f"导出失败: {e}"
+
+    def clear_unknown_mods(self) -> bool:
+        """清空未知模组列表（内存 + 磁盘）"""
+        self._unknown_mods.clear()
+        with self._unknown_lock:
+            try:
+                if os.path.exists(LOCAL_UNKNOWN_MODS_PATH):
+                    os.remove(LOCAL_UNKNOWN_MODS_PATH)
+                return True
+            except IOError:
+                return False
+
+    def get_unknown_mods_repo_url(self) -> str:
+        """获取未知模组提交仓库地址"""
+        return UNKNOWN_MODS_REPO_URL

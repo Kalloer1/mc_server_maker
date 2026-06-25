@@ -1,13 +1,13 @@
 # mod_filter.py —— 智能模组分离模块
 # 职责：
-#   1. 遍历所有模组 jar 文件，提取 modId
-#   2. 查询数据库获取环境侧（client / server / both）
-#   3. 数据库未知时，从 jar 内部解析 side 字段
-#   4. 仍无法确定时，使用黑名单进行文件名模糊匹配
-#   5. 将分离结果返回，同时自动记录新发现到 local_discoveries.json
+#   1. 遍历所有模组 jar 文件，提取 modId 和内部 side 信息
+#   2. 优先从 jar 内部元数据解析环境侧（side / environment）
+#   3. 内部无信息时，查询在线数据库
+#   4. 仍未知时，使用黑名单进行文件名模糊匹配
+#   5. 将分离结果返回，未知模组可保存到本地并上传
 #
-# 查询优先级：
-#   在线数据库缓存 → 本地发现 → jar 内 side 字段解析 → 黑名单匹配 → 保留（按 server 处理）
+# 查询优先级（从高到低）：
+#   jar 内 side 字段解析 → 在线数据库 → 本地发现记录 → 黑名单匹配 → 保留（按 both 处理）
 
 import re
 import zipfile
@@ -80,16 +80,18 @@ def filter_mods(
             else:
                 progress_callback(f"[{idx + 1}/{total}] {mod_name} → 无法从jar内读取，回退到文件名")
 
-        # ---- 步骤 2：查询数据库 ----
-        side = mod_db.get_mod_side(modid) if modid else "unknown"
-
-        # ---- 步骤 3：数据库未知 → jar 内解析 side 字段 ----
-        if side == "unknown" and modid:
+        # ---- 步骤 2：优先从 jar 内部解析 side 字段 ----
+        side = "unknown"
+        if modid:
             jar_side = _parse_side_from_jar(mod_file)
             if jar_side != "unknown":
                 side = jar_side
                 # 自动记录到本地发现
                 mod_db.add_local_discovery(modid, side)
+
+        # ---- 步骤 3：jar 内无信息 → 查询数据库 ----
+        if side == "unknown" and modid:
+            side = mod_db.get_mod_side(modid)
 
         # ---- 步骤 4：仍未知 → 黑名单匹配 ----
         if side == "unknown":
@@ -105,6 +107,14 @@ def filter_mods(
             unknown_mods.append(mod_path)
             server_mods.append(mod_path)
             unknown_count += 1
+            # 记录到未知模组库
+            mod_db.add_unknown_mod(
+                modid=modid,
+                mod_name=mod_name,
+                version=version,
+                author=author,
+                source="jar_unknown" if modid else "no_modid",
+            )
 
         # 记录详细信息
         mod_details[mod_path] = {

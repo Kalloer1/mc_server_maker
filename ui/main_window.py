@@ -403,6 +403,11 @@ class MainWindow(QMainWindow):
         btn_default.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         btn_default.clicked.connect(self._reset_mods_to_default)
         btn_row.addWidget(btn_default)
+        btn_unknown = QPushButton("❓ 未知模组管理")
+        btn_unknown.setToolTip("查看和导出无法识别环境的模组")
+        btn_unknown.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        btn_unknown.clicked.connect(self._on_manage_unknown_mods)
+        btn_row.addWidget(btn_unknown)
         btn_row.addStretch()
         content_layout.addLayout(btn_row)
 
@@ -1174,6 +1179,119 @@ chmod +x start.sh
         display = text.strip() if text.strip() else "A Minecraft Server"
         html = parse_motd_to_html(display)
         self._motd_server_name.setText(html)
+
+    def _on_manage_unknown_mods(self):
+        """未知模组管理对话框"""
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QTextEdit, QMessageBox, QFileDialog
+        import webbrowser
+
+        # 确保数据库已加载未知模组
+        self._mod_db.load_unknown_mods()
+        unknown_mods = self._mod_db.get_unknown_mods()
+        count = self._mod_db.get_unknown_mods_count()
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"❓ 未知模组管理（共 {count} 个）")
+        dialog.setMinimumSize(550, 450)
+
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(10)
+
+        # 说明文字
+        info = QLabel("以下是无法从 jar 内部和在线数据库识别环境的模组。"
+                     "您可以导出后手动提交到社区数据库。")
+        info.setWordWrap(True)
+        info.setStyleSheet("color: #a0a0b0; padding: 8px;")
+        layout.addWidget(info)
+
+        # 列表显示
+        text_edit = QTextEdit()
+        text_edit.setReadOnly(True)
+        text_edit.setStyleSheet("""
+            QTextEdit {
+                background-color: #1e1e32;
+                color: #e0e0e0;
+                border: 1px solid #2a2a4a;
+                border-radius: 8px;
+                padding: 10px;
+                font-family: Consolas, monospace;
+                font-size: 12px;
+            }
+        """)
+
+        if unknown_mods:
+            lines = []
+            for modid, info in unknown_mods.items():
+                name = info.get("name", "")
+                version = info.get("version", "")
+                author = info.get("author", "")
+                lines.append(f"• {modid}")
+                if name:
+                    lines.append(f"   文件: {name}")
+                if version:
+                    lines.append(f"   版本: {version}")
+                if author:
+                    lines.append(f"   作者: {author}")
+                lines.append("")
+            text_edit.setText("\n".join(lines))
+        else:
+            text_edit.setText("暂无未知模组记录。\n\n扫描游戏目录后，无法识别环境的模组会显示在这里。")
+
+        layout.addWidget(text_edit, 1)
+
+        # 按钮行
+        btn_layout = QHBoxLayout()
+
+        btn_open_repo = QPushButton("🌐 查看社区数据库")
+        btn_open_repo.setToolTip("在浏览器中打开未知模组数据仓库")
+        btn_open_repo.clicked.connect(
+            lambda: webbrowser.open(self._mod_db.get_unknown_mods_repo_url())
+        )
+        btn_layout.addWidget(btn_open_repo)
+
+        btn_layout.addStretch()
+
+        btn_export = QPushButton("📤 导出 JSON")
+        btn_export.setToolTip("导出未知模组为 JSON 文件，可用于手动提交 PR")
+        btn_export.clicked.connect(lambda: self._export_unknown_mods(dialog))
+        btn_layout.addWidget(btn_export)
+
+        btn_clear = QPushButton("🗑️ 清空")
+        btn_clear.setToolTip("清空本地未知模组记录")
+        btn_clear.clicked.connect(lambda: self._clear_unknown_mods(dialog))
+        btn_layout.addWidget(btn_clear)
+
+        btn_close = QPushButton("关闭")
+        btn_close.clicked.connect(dialog.accept)
+        btn_layout.addWidget(btn_close)
+
+        layout.addLayout(btn_layout)
+
+        dialog.exec()
+
+    def _export_unknown_mods(self, parent_dialog):
+        """导出未知模组为 JSON 文件"""
+        file_path, _ = QFileDialog.getSaveFileName(
+            parent_dialog, "导出未知模组", "unknown_mods.json", "JSON 文件 (*.json)"
+        )
+        if file_path:
+            success, msg = self._mod_db.export_unknown_mods(file_path)
+            if success:
+                QMessageBox.information(parent_dialog, "导出成功", msg +
+                    "\n\n您可以将此文件提交到 GitHub 社区数据库，帮助完善模组环境识别。")
+            else:
+                QMessageBox.warning(parent_dialog, "导出失败", msg)
+
+    def _clear_unknown_mods(self, parent_dialog):
+        """清空未知模组记录"""
+        reply = QMessageBox.question(
+            parent_dialog, "确认清空", "确定要清空本地未知模组记录吗？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            self._mod_db.clear_unknown_mods()
+            parent_dialog.accept()
+            QMessageBox.information(parent_dialog, "已清空", "未知模组记录已清空。")
 
     def _show_color_help(self):
         """显示 MOTD 颜色代码帮助对话框"""
